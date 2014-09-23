@@ -3,7 +3,7 @@ from django.core.cache import get_cache
 from django.utils.functional import wraps
 from cache_utils.utils import _cache_key, _func_info, _func_type, sanitize_memcached_key
 
-def cached(timeout, group=None, backend=None):
+def cached(timeout, group=None, backend=None, name_callback=None):
     """ Caching decorator. Can be applied to function, method or classmethod.
     Supports bulk cache invalidation and invalidation for exact parameter
     set. Cache keys are human-readable because they are constructed from
@@ -18,13 +18,7 @@ def cached(timeout, group=None, backend=None):
     invalidated.
     """
 
-    if group:
-        backend_kwargs = {'group': group}
-        get_key = _cache_key
-    else:
-        backend_kwargs = {}
-        def get_key(*args, **kwargs):
-            return sanitize_memcached_key(_cache_key(*args, **kwargs))
+    backend_kwargs = {} if not group else {'group': group}
 
     if backend:
         cache_backend = get_cache(backend)
@@ -37,10 +31,9 @@ def cached(timeout, group=None, backend=None):
 
         @wraps(func)
         def wrapper(*args, **kwargs):
-            full_name(*args)
 
             # try to get the value from cache
-            key = get_key(wrapper._full_name, func_type, args, kwargs)
+            key = get_key(*args, **kwargs)
             value = cache_backend.get(key, **backend_kwargs)
             
             # in case of cache miss recalculate the value and put it to the cache
@@ -52,26 +45,26 @@ def cached(timeout, group=None, backend=None):
 
         def invalidate(*args, **kwargs):
             ''' invalidates cache result for function called with passed arguments '''
-            if not hasattr(wrapper, '_full_name'):
-                return
-            key = get_key(wrapper._full_name, 'function', args, kwargs)
-            cache_backend.delete(key, **backend_kwargs)
-        
+            cache_backend.delete(get_key(*args, **kwargs), **backend_kwargs)
+
         def force_recalc(*args, **kwargs):
             '''
             forces a call to the function & sets the new value in the cache
             '''
-            full_name(*args)
-            key = get_key(wrapper._full_name, func_type, args, kwargs)
             value = func(*args, **kwargs)
-            cache_backend.set(key, value, timeout, **backend_kwargs)
+            cache_backend.set(get_key(*args, **kwargs), value, timeout,
+                              **backend_kwargs)
             return value
 
-        def full_name(*args):
+        def get_key(*args, **kwargs):
+            key = _cache_key(name(*args, **kwargs), func_type, args, kwargs)
+            return sanitize_memcached_key(key)
+
+        def name(*args, **kwargs):
             # full name is stored as attribute on first call
-            if not hasattr(wrapper, '_full_name'):
-                name, _args = _func_info(func, args)
-                wrapper._full_name = name
+            name, _args = _func_info(func, args)
+            return name if not name_callback \
+                else name_callback(name, *args)
 
         wrapper.invalidate = invalidate
         wrapper.force_recalc = force_recalc
